@@ -1,0 +1,60 @@
+import torch.nn as nn
+from torch.nn import functional as F
+import torch
+import torchvision.transforms as transforms
+from torch.utils.data import DataLoader
+from torchvision.datasets import CIFAR10
+from calculate_model_size.model_size import compute_model_nbits
+from get_cifar10_pretrained_model_new import ResNet18
+
+def get_acc(output, label):
+    total = output.shape[0]
+    _, pred_label = output.max(1)
+    num_correct = (pred_label == label).sum().item()
+    return num_correct
+def main():
+    batchsz = 64
+    LR = 0.001
+    normalize = transforms.Normalize(mean=[0.4914, 0.4822, 0.4465],
+                                     std=[0.2023, 0.1994, 0.2010])
+    cifar10_train = DataLoader(CIFAR10(root='./CIFAR10',
+                                       train=True,
+                                       transform=transforms.Compose([transforms.RandomHorizontalFlip(),
+                                       transforms.RandomCrop(32,4),
+                                       transforms.ToTensor(),
+                                       normalize,
+                                        ]),download=True),batch_size=batchsz,shuffle=True)
+
+    device = torch.device('cuda:0')
+    # model = ResNet18()
+    # model.to(device)
+    quantization_compressed_model = torch.load('save_model/no_shortcut/parameters/centroids/quantization_1.6_2_k2048_compressed_model_cifar10.pt')
+    quantization_compressed_model = quantization_compressed_model.to(device)
+    print('before_training', compute_model_nbits(quantization_compressed_model))
+    criteon = nn.CrossEntropyLoss().to(device)
+    optimizer = torch.optim.Adam(quantization_compressed_model.parameters(), lr=LR)
+    # scheduler = torch.optim.lr_scheduler.MultiStepLR(optimizer,milestones=[150,250],gamma = 0.8)
+    scheduler = torch.optim.lr_scheduler.StepLR(optimizer,step_size=30,gamma = 0.1)
+    for epoch in range(90):
+        train_loss = 0
+        num_correct = 0
+        quantization_compressed_model.train()
+        for batchidx, (x, label) in enumerate(cifar10_train):
+            x, label = x.to(device), label.to(device)
+            y_ = quantization_compressed_model(x)
+            loss = criteon(y_, label)
+
+            # 反向传播
+            optimizer.zero_grad()
+            loss.backward()
+            optimizer.step()
+
+            train_loss += loss.item()
+            num_correct += get_acc(y_, label)
+        scheduler.step()
+        print("epoch:%d,train_loss:%f,train_acc:%f" % (epoch, train_loss / len(cifar10_train),
+                                                       num_correct / 50000 ))  # 打印的是最后一个batch的loss
+    print('after_training',compute_model_nbits(quantization_compressed_model))
+    torch.save(quantization_compressed_model, 'save_model/no_shortcut/parameters/centroids/quantization_1.6_2_k2048_epoch90_lr0.001_gamma0.001_compressed_model_cifar10_trained.pt')
+if __name__ == "__main__":
+    main()
